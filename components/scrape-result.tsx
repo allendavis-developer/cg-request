@@ -3,6 +3,7 @@
 import { ExternalLink, CheckCircle, XCircle, Image as ImageIcon, Link as LinkIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { ProductCardGrid, ProductCardData } from "@/components/product-card"
 
 interface ScrapeResult {
   success: boolean
@@ -14,6 +15,7 @@ interface ScrapeResult {
   screenshot?: string
   error?: string
   metadata?: Record<string, any>
+  products?: ProductCardData[] // Extracted product cards
 }
 
 interface ScrapeResultProps {
@@ -39,26 +41,39 @@ export function ScrapeResultDisplay({ result }: ScrapeResultProps) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
-          <div className="flex items-center gap-2 text-green-400 mb-1">
+          <div className="flex items-center gap-2 text-green-400 mb-2">
             <CheckCircle className="h-5 w-5" />
             <span className="font-semibold">Scraping Successful</span>
           </div>
-          <a
-            href={result.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1"
-          >
-            {result.url}
-            <ExternalLink className="h-3 w-3" />
-          </a>
+          <div className="mb-3 p-3 rounded-lg border border-gray-700 bg-gray-800/50">
+            <div className="text-xs text-gray-400 mb-1">Scraped Page URL:</div>
+            <a
+              href={result.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 text-sm font-medium flex items-center gap-2 break-all"
+            >
+              {result.url}
+              <ExternalLink className="h-4 w-4 flex-shrink-0" />
+            </a>
+          </div>
           {result.title && (
             <h3 className="text-lg font-semibold text-white mt-2">{result.title}</h3>
           )}
         </div>
       </div>
 
-      {/* Text Content */}
+      {/* Product Cards - Show cards if available, otherwise show other content */}
+      {result.products && result.products.length > 0 ? (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-gray-300 mb-2">
+            <span className="text-sm font-semibold">Products Found ({result.products.length}):</span>
+          </div>
+          <ProductCardGrid products={result.products} />
+        </div>
+      ) : (
+        <>
+          {/* Text Content */}
       {result.text && (
         <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-4">
           <h4 className="text-sm font-semibold text-gray-300 mb-2">Content:</h4>
@@ -157,6 +172,8 @@ export function ScrapeResultDisplay({ result }: ScrapeResultProps) {
             ))}
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   )

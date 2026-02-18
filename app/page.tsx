@@ -19,6 +19,8 @@ interface Message {
   scrapeResult?: any
   isThinking?: boolean
   thinkingSteps?: string[]
+  refinementQuestions?: any[] // Questions to refine product selection
+  refinementAnswers?: Record<string, string> // User's answers to questions
 }
 
 interface Conversation {
@@ -363,6 +365,51 @@ User Request: What is this item worth?`
         result.success ? "Extracting results..." : "Error occurred"
       ]
 
+      // Generate first refinement question if we have products
+      let firstQuestion: any = null
+      if (result.success && result.products && result.products.length > 1) {
+        updateThinkingMessage(convId, [
+          ...finalSteps,
+          "Analyzing products to generate refinement question..."
+        ])
+        
+        try {
+          const questionsResponse = await fetch("/api/ai-tooling", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              task: "generate_refinement_questions",
+              input: {
+                products: result.products.map((p: any) => ({
+                  title: p.title, // Title for question generation
+                  price: p.price, // Price for determining if questions are needed
+                })),
+                previousQuestions: [],
+                previousAnswers: {},
+                requestContext: requestContext?.itemInformation || undefined, // Pass original request to avoid asking about already-specified features
+              },
+            }),
+          })
+          
+          const questionsResult = await questionsResponse.json()
+          console.log("Questions API response:", questionsResult)
+          if (questionsResult.success && questionsResult.result?.question) {
+            firstQuestion = questionsResult.result.question
+            // Generate unique ID for this question
+            firstQuestion.id = `question_${Date.now()}`
+            console.log("Generated first question:", firstQuestion)
+          } else if (questionsResult.success && questionsResult.result?.question === null) {
+            console.log("AI determined no question needed (all products have same price or can be identified)")
+          } else {
+            console.warn("No question in response:", questionsResult)
+          }
+        } catch (e) {
+          console.error("Failed to generate refinement question:", e)
+        }
+      }
+
       setConversations((prev) =>
         prev.map((conv) => {
           if (conv.id === convId) {
@@ -377,6 +424,8 @@ User Request: What is this item worth?`
                     ? `Successfully searched uk.webuy.com for "${searchTerm}". Here's what I found:`
                     : `I encountered an error while searching: ${result.error}`,
                   scrapeResult: result,
+                  refinementQuestions: firstQuestion ? [firstQuestion] : undefined,
+                  refinementAnswers: {},
                 }
               }
               return msg
@@ -427,6 +476,213 @@ User Request: What is this item worth?`
     } finally {
       setIsScraping(false)
     }
+  }
+
+  // Handle refinement question answers - filter products and generate next question
+  const handleRefinementAnswer = async (messageId: string, questionId: string, answer: string) => {
+    setConversations((prev) =>
+      prev.map((conv) => {
+        const updatedMessages = conv.messages.map((msg) => {
+          if (msg.id === messageId && msg.scrapeResult?.products) {
+            const currentAnswers = { ...(msg.refinementAnswers || {}), [questionId]: answer }
+            // Remove the answer if it's empty (cleared)
+            if (!answer || answer.trim() === '') {
+              delete currentAnswers[questionId]
+            }
+            
+            // Filter products based on all answers
+            let filtered = [...(msg.scrapeResult.products || [])]
+            
+            // Apply filtering based on answers
+            Object.entries(currentAnswers).forEach(([qId, ans]) => {
+              if (!ans || ans.trim() === '') return
+              
+              const question = msg.refinementQuestions?.find((q: any) => q.id === qId)
+              if (question) {
+                const answerLabel = question.options.find((opt: any) => opt.value === ans)?.label || ans
+                const normalizedAnswer = answerLabel.toLowerCase().replace(/[^a-z0-9]/g, '')
+                
+                filtered = filtered.filter((product: any) => {
+                  const title = (product.title || '').toLowerCase()
+                  // Try multiple matching strategies
+                  // 1. Direct word match
+                  const answerWords = normalizedAnswer.split(/\s+/).filter((w: string) => w.length > 2)
+                  const hasWordMatch = answerWords.some((word: string) => title.includes(word))
+                  
+                  // 2. Check if answer label appears in title
+                  const hasLabelMatch = title.includes(answerLabel.toLowerCase())
+                  
+                  // 3. For condition questions, check for keywords
+                  if (question.question.toLowerCase().includes('condition')) {
+                    const conditionKeywords: Record<string, string[]> = {
+                      'boxed': ['boxed', 'box'],
+                      'unboxed': ['unboxed', 'no box'],
+                      'discounted': ['discounted'],
+                      'refurbished': ['refurbished', 'refurb'],
+                      'used': ['used'],
+                      'new': ['new'],
+                    }
+                    const answerKey = answerLabel.toLowerCase()
+                    const keywords = conditionKeywords[answerKey] || [answerKey]
+                    return keywords.some(keyword => title.includes(keyword))
+                  }
+                  
+                  return hasWordMatch || hasLabelMatch
+                })
+              }
+            })
+            
+            // Generate next question if we still have multiple products
+            let newQuestions = [...(msg.refinementQuestions || [])]
+            if (filtered.length > 1 && answer && answer.trim() !== '') {
+              // Generate next question based on filtered products (async)
+              setTimeout(async () => {
+                try {
+                  // First, do a sanity check: check if another question is actually needed
+                  const sanityCheckResponse = await fetch("/api/ai-tooling", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      task: "generate_refinement_questions",
+                      input: {
+                        products: filtered.map((p: any) => ({
+                          title: p.title,
+                          price: p.price,
+                        })),
+                        previousQuestions: msg.refinementQuestions || [],
+                        previousAnswers: currentAnswers,
+                        requestContext: conv.requestData?.itemInformation || undefined,
+                        sanityCheck: true, // Flag for sanity check mode
+                      },
+                    }),
+                  })
+                  
+                  const sanityResult = await sanityCheckResponse.json()
+                  
+                  // Only proceed if sanity check says a question is needed
+                  if (sanityResult.success && sanityResult.result?.question === "needed") {
+                    // Now generate the actual question
+                    const questionsResponse = await fetch("/api/ai-tooling", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        task: "generate_refinement_questions",
+                        input: {
+                          products: filtered.map((p: any) => ({
+                            title: p.title, // Title for question generation
+                            price: p.price, // Price for determining if questions are needed
+                          })),
+                          previousQuestions: msg.refinementQuestions || [],
+                          previousAnswers: currentAnswers,
+                          requestContext: conv.requestData?.itemInformation || undefined, // Pass original request context
+                        },
+                      }),
+                    })
+                  
+                    const questionsResult = await questionsResponse.json()
+                    if (questionsResult.success) {
+                      // Check if AI returned null (no question needed)
+                      if (questionsResult.result?.question === null) {
+                        console.log("AI determined no more questions needed")
+                        return // Stop asking questions
+                      }
+                      
+                      if (questionsResult.result?.question) {
+                        const nextQuestion = questionsResult.result.question
+                        nextQuestion.id = `question_${Date.now()}`
+                        
+                        setConversations((prevConv) =>
+                          prevConv.map((prevC) => {
+                            if (prevC.id === conv.id) {
+                              return {
+                                ...prevC,
+                                messages: prevC.messages.map((m) => {
+                                  if (m.id === messageId) {
+                                    // Check if this question is similar to existing ones
+                                    const isDuplicate = m.refinementQuestions?.some((q: any) => {
+                                      // Exact match
+                                      if (q.question === nextQuestion.question) return true
+                                      
+                                      // Similar question check (normalize and compare)
+                                      const normalize = (text: string) => text.toLowerCase()
+                                        .replace(/[^a-z0-9\s]/g, '')
+                                        .replace(/\s+/g, ' ')
+                                        .trim()
+                                      
+                                      const existingNormalized = normalize(q.question)
+                                      const newNormalized = normalize(nextQuestion.question)
+                                      
+                                      // Check for similar keywords
+                                      const existingKeywords = existingNormalized.split(' ')
+                                        .filter(w => w.length > 3)
+                                      const newKeywords = newNormalized.split(' ')
+                                        .filter(w => w.length > 3)
+                                      
+                                      // If they share key words like "condition", "color", "phone", etc., it's likely a duplicate
+                                      const sharedKeywords = existingKeywords.filter(k => 
+                                        newKeywords.includes(k) && 
+                                        ['condition', 'color', 'colour', 'phone', 'device', 'item', 'product', 'iphone'].includes(k)
+                                      )
+                                      
+                                      // If question is about condition and we already asked about condition
+                                      if (existingNormalized.includes('condition') && 
+                                          newNormalized.includes('condition')) {
+                                        return true
+                                      }
+                                      
+                                      // If question is about color and we already asked about color (any variation)
+                                      if ((existingNormalized.includes('color') || existingNormalized.includes('colour')) && 
+                                          (newNormalized.includes('color') || newNormalized.includes('colour'))) {
+                                        return true
+                                      }
+                                      
+                                      // If both questions are asking about the same feature (e.g., both have "color" or both have "condition")
+                                      if (sharedKeywords.length > 0) {
+                                        return true
+                                      }
+                                      
+                                      return false
+                                    })
+                                    
+                                    if (!isDuplicate) {
+                                      return {
+                                        ...m,
+                                        refinementQuestions: [...(m.refinementQuestions || []), nextQuestion],
+                                      }
+                                    } else {
+                                      console.warn("Duplicate question detected, skipping:", nextQuestion.question)
+                                    }
+                                  }
+                                  return m
+                                }),
+                              }
+                            }
+                            return prevC
+                          })
+                        )
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.error("Failed to generate next question:", e)
+                }
+              }, 100)
+            }
+            
+            return {
+              ...msg,
+              refinementAnswers: currentAnswers,
+            }
+          }
+          return msg
+        })
+
+        return {
+          ...conv,
+          messages: updatedMessages,
+        }
+      })
+    )
   }
 
   const handleScrape = async (url: string, convId: string) => {
@@ -710,7 +966,11 @@ User Request: ${content}`
             ) : (
               <>
                 {currentConversation?.messages.map((message) => (
-                  <ChatMessage key={message.id} message={message} />
+                  <ChatMessage 
+                    key={message.id} 
+                    message={message}
+                    onRefinementAnswer={handleRefinementAnswer}
+                  />
                 ))}
                 {isTyping && (
                   <div className="w-full border-b border-gray-800/50 bg-[#212121]">
