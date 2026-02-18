@@ -51,105 +51,43 @@ export async function POST(request: NextRequest) {
         break
 
       case 'generate_refinement_questions':
-        const isSanityCheck = input.sanityCheck === true
-        
-        if (isSanityCheck) {
-          // Sanity check mode: just check if a question is needed
-          systemPrompt = `Analyze the filtered products and previous answers to determine if another question is needed.
+        systemPrompt = `You are a product pricing assistant. You have a list of products with titles and prices, a user's original request, and any previous clarification questions and answers.
 
-Check:
-1. Do all products have the same price? If yes, return null
-2. Can you identify the product without more questions? If yes, return null
-3. Would another question be redundant given previous answers? If yes, return null
-4. Is there a NEW distinguishing feature that hasn't been asked about? If yes, return "needed"
+Your job: decide if you need ONE more clarification question from the user to determine which price applies to their request.
 
-Return ONLY: {"question": null} if no question needed, OR {"question": "needed"} if a question is needed.`
-        } else {
-          // Normal mode: generate a question
-          systemPrompt = `You are a product refinement assistant. Analyze the product titles and ask questions for clarification if needed.
+Return ONLY valid JSON in one of these two formats:
 
-Return ONLY valid JSON in this exact format:
-{
-  "question": {
-    "id": "question_1",
-    "question": "What color is it?",
-    "options": [
-      {"value": "white", "label": "White"},
-      {"value": "midnight-black", "label": "Midnight Black"}
-    ]
-  }
-}
+If you need clarification:
+{"needsClarification": true, "question": {"id": "q1", "question": "What color is it?", "options": [{"value": "white", "label": "White"}, {"value": "black", "label": "Black"}]}}
 
-OR if no question is needed:
-{
-  "question": null
-}
+If you have enough information:
+{"needsClarification": false}
 
 Rules:
-- Generate ONE question at a time, OR return null if no question needed
-- Questions should be based ONLY on what you see in the product titles
-- If all products have the same price, you may return null
-- Each question should have 2-5 options
-- Option values: lowercase, hyphens (e.g., "midnight-black")
-- Option labels: proper capitalization (e.g., "Midnight Black")
-- Return format: {"question": {...}} OR {"question": null}`
-        }
+- Only ask if genuinely needed to identify the correct price
+- ONE question at a time, with 2-6 options based on what exists in the titles
+- If all remaining matching products have the same price, return needsClarification: false
+- Option values: lowercase with hyphens. Option labels: proper capitalization`
 
-        const products = input.products || input
-        const productsJson = JSON.stringify(products, null, 2)
-        const previousQuestions = input.previousQuestions || []
-        const previousAnswers = input.previousAnswers || {}
-        const requestContext = input.requestContext || ''
-        
-        // Check if all products have the same price
-        const prices = products.map((p: any) => p.price).filter((p: any) => p)
-        const uniquePrices = [...new Set(prices)]
-        const allSamePrice = uniquePrices.length === 1 && prices.length > 0
-        
-        if (isSanityCheck) {
-          // Sanity check: just determine if question is needed
-          let contextText = ''
-          if (previousQuestions.length > 0) {
-            contextText += `\n\nPrevious questions and answers:\n${previousQuestions.map((q: any) => {
-              const answer = previousAnswers[q.id]
-              const answerLabel = answer ? q.options?.find((o: any) => o.value === answer)?.label : 'Not answered'
-              return `- ${q.question} → ${answerLabel || answer || 'Not answered'}`
-            }).join('\n')}\n\nCheck if another question would be redundant or unnecessary.`
-          }
-          
-          if (allSamePrice) {
-            contextText += `\n\nAll ${prices.length} products have the same price: ${uniquePrices[0]}. You likely don't need another question.`
-          } else {
-            contextText += `\n\nProducts have ${uniquePrices.length} different prices: ${uniquePrices.join(', ')}. A question may be needed to distinguish them.`
-          }
-          
-          userPrompt = `Given these filtered products (already narrowed by previous answers), determine if another question is needed:
+        {
+          const products = input.products || []
+          const previousQuestions: any[] = input.previousQuestions || []
+          const previousAnswers: Record<string, string> = input.previousAnswers || {}
+          const requestContext: string = input.requestContext || ''
 
-${productsJson}${contextText}
+          const previousQA = previousQuestions.map((q: any) => {
+            const answer = previousAnswers[q.id]
+            const label = answer ? (q.options?.find((o: any) => o.value === answer)?.label || answer) : 'Not answered'
+            return `  Q: ${q.question}\n  A: ${label}`
+          }).join('\n')
 
-Return {"question": null} if no question needed (all same price, or question would be redundant), or {"question": "needed"} if a question is needed.`
-        } else {
-          // Normal mode: generate question
-          let contextText = ''
-          if (previousQuestions.length > 0) {
-            contextText += `\n\nPrevious questions asked:\n${previousQuestions.map((q: any) => `- ${q.question}`).join('\n')}\n\nDo not ask similar questions.`
-          }
-          
-          if (requestContext) {
-            contextText += `\n\nUser's original request: "${requestContext}"\nDo not ask about features already specified.`
-          }
-          
-          if (allSamePrice) {
-            contextText += `\n\nAll products have the same price (${uniquePrices[0]}). You may return null if no question is needed.`
-          } else {
-            contextText += `\n\nProducts have different prices: ${uniquePrices.join(', ')}`
-          }
-          
-          userPrompt = `Analyze these product titles and ask questions for clarification if needed:
+          userPrompt = `User's request: "${requestContext}"
 
-${productsJson}${contextText}
+All products:
+${products.map((p: any) => `- "${p.title}" → ${p.price || 'no price'}`).join('\n')}
+${previousQA ? `\nPrevious clarifications:\n${previousQA}` : ''}
 
-Return ONLY the JSON: {"question": {...}} OR {"question": null}`
+Do you need one more clarification question to determine the correct price? Return ONLY the JSON.`
         }
         
         // Use higher token limit for this task
@@ -182,22 +120,12 @@ Return ONLY the JSON: {"question": {...}} OR {"question": null}`
           }
         }
 
-        // Handle both old format (questions array) and new format (single question or null)
-        let question = null
-        if (parsedResult.question === null) {
-          // Explicitly null - no question needed
-          question = null
-        } else if (parsedResult.question && typeof parsedResult.question === 'object') {
-          // New format: single question object
-          question = parsedResult.question
-        } else if (parsedResult.questions && Array.isArray(parsedResult.questions) && parsedResult.questions.length > 0) {
-          // Old format: array of questions, take the first one
-          question = parsedResult.questions[0]
-        }
-
         return NextResponse.json({
           success: true,
-          result: question ? { question } : { question: null },
+          result: {
+            needsClarification: parsedResult.needsClarification === true,
+            question: parsedResult.needsClarification ? (parsedResult.question || null) : null,
+          },
           task,
           usage: completion.usage,
         })

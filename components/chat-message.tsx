@@ -18,6 +18,7 @@ interface Message {
   scrapeResult?: any
   refinementQuestions?: any[]
   refinementAnswers?: Record<string, string>
+  refinementComplete?: boolean
 }
 
 interface ChatMessageProps {
@@ -264,6 +265,14 @@ export function ChatMessage({ message, onRefinementAnswer }: ChatMessageProps) {
                     }
                   }}
                 />
+              </div>
+            )}
+
+            {/* Refinement Complete */}
+            {message.refinementComplete && !isCurrentlyThinking && (
+              <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-green-900/30 border border-green-700/50 text-green-400 text-sm">
+                <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                Product identified — no further clarification needed.
               </div>
             )}
 
