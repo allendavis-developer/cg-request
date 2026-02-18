@@ -1,15 +1,19 @@
 "use client"
 
-import { User, Bot, Copy, Check, ThumbsUp, ThumbsDown } from "lucide-react"
+import { User, Bot, Copy, Check, ThumbsUp, ThumbsDown, ChevronDown, ChevronUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
+import { ScrapeResultDisplay } from "@/components/scrape-result"
 
 interface Message {
   id: string
   role: "user" | "assistant"
   content: string
   timestamp: string
+  isThinking?: boolean
+  thinkingSteps?: string[]
+  scrapeResult?: any
 }
 
 interface ChatMessageProps {
@@ -19,6 +23,7 @@ interface ChatMessageProps {
 export function ChatMessage({ message }: ChatMessageProps) {
   const [copied, setCopied] = useState(false)
   const [liked, setLiked] = useState<boolean | null>(null)
+  const [thinkingExpanded, setThinkingExpanded] = useState(true)
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(message.content)
@@ -27,6 +32,9 @@ export function ChatMessage({ message }: ChatMessageProps) {
   }
 
   const isUser = message.role === "user"
+  // Show thinking panel if currently thinking OR if there are completed thinking steps
+  const hasThinkingSteps = !isUser && message.thinkingSteps && message.thinkingSteps.length > 0
+  const isCurrentlyThinking = message.isThinking === true
 
   return (
     <div
@@ -53,11 +61,53 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
           {/* Content */}
           <div className="flex-1 min-w-0 pt-1">
-            <div className="prose prose-invert max-w-none">
-              <div className="text-gray-100 whitespace-pre-wrap break-words leading-relaxed">
-                {message.content}
+            {/* Thinking Progress Panel - Show if there are thinking steps (active or completed) */}
+            {hasThinkingSteps && (
+              <div className="mb-3 rounded-lg border border-gray-700/50 bg-gray-800/30 overflow-hidden">
+                <button
+                  onClick={() => setThinkingExpanded(!thinkingExpanded)}
+                  className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-700/30 transition-colors"
+                >
+                  <span className="text-sm font-medium text-gray-300">
+                    {isCurrentlyThinking ? "Processing..." : "Processed"}
+                  </span>
+                  {thinkingExpanded ? (
+                    <ChevronUp className="h-4 w-4 text-gray-400" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-gray-400" />
+                  )}
+                </button>
+                {thinkingExpanded && (
+                  <div className="px-3 pb-3 space-y-1.5">
+                    {message.thinkingSteps!.map((step, index) => (
+                      <div
+                        key={index}
+                        className="flex items-start gap-2 text-sm text-gray-400"
+                      >
+                        <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-gray-500 flex-shrink-0" />
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
+            )}
+
+            {/* Regular Content */}
+            {message.content && (
+              <div className="prose prose-invert max-w-none mb-3">
+                <div className="text-gray-100 whitespace-pre-wrap break-words leading-relaxed">
+                  {message.content}
+                </div>
+              </div>
+            )}
+
+            {/* Scraping Results */}
+            {message.scrapeResult && (
+              <div className="mt-3">
+                <ScrapeResultDisplay result={message.scrapeResult} />
+              </div>
+            )}
 
             {/* Action buttons (only for assistant messages) */}
             {!isUser && (

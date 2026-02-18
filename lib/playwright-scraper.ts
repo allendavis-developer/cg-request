@@ -1,4 +1,4 @@
-import { chromium, Browser, Page } from 'playwright'
+import { chromium, Browser, Page, BrowserContext } from 'playwright'
 
 export interface FormFillAction {
   selector: string
@@ -43,12 +43,23 @@ class PlaywrightScraper {
     return this.browser
   }
 
+  async getContext() {
+    const browser = await this.init()
+    return await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      locale: 'en-GB',
+      timezoneId: 'Europe/London',
+    })
+  }
+
   async scrape(options: ScrapeOptions): Promise<ScrapeResult> {
     let page: Page | null = null
+    let context: BrowserContext | null = null
 
     try {
-      const browser = await this.init()
-      page = await browser.newPage()
+      context = await this.getContext()
+      page = await context.newPage()
 
       // Navigate to the URL
       await page.goto(options.url, {
@@ -174,6 +185,9 @@ class PlaywrightScraper {
     } finally {
       if (page) {
         await page.close()
+      }
+      if (context) {
+        await context.close()
       }
     }
   }

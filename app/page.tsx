@@ -17,6 +17,8 @@ interface Message {
   content: string
   timestamp: string
   scrapeResult?: any
+  isThinking?: boolean
+  thinkingSteps?: string[]
 }
 
 interface Conversation {
@@ -128,23 +130,19 @@ export default function Home() {
     setCurrentConversationId(newConv.id)
     setShowRequestForm(false)
     
-    // Add a system message with the request data
-    const systemMessage: Message = {
-      id: `msg-${Date.now()}`,
-      role: "assistant",
-      content: `Request Information:
+    // Add user message with request information
+    const userMessageContent = `Request Information:
 - Item Information: ${requestData.itemInformation}
 - CR Rate: ${requestData.crRate}
 - Type: ${requestData.type.toUpperCase()}
-- Customer Expectation: ${requestData.customerExpectation}`,
-      timestamp: "Just now",
-    }
+- Customer Expectation: ${requestData.customerExpectation}
+
+User Request: What is this item worth?`
     
-    // Add user message asking about item worth
     const userMessage: Message = {
-      id: `msg-${Date.now() + 1}`,
+      id: `msg-${Date.now()}`,
       role: "user",
-      content: "What is this item worth?",
+      content: userMessageContent,
       timestamp: "Just now",
     }
     
@@ -153,94 +151,16 @@ export default function Home() {
         if (conv.id === newConv.id) {
           return {
             ...conv,
-            messages: [systemMessage, userMessage],
-            lastMessage: userMessage.content,
+            messages: [userMessage],
+            lastMessage: "What is this item worth?",
           }
         }
         return conv
       })
     )
 
-    // Automatically call AI API to answer the question
-    setIsTyping(true)
-    
-    try {
-      const apiMessages = [
-        {
-          role: "assistant",
-          content: systemMessage.content,
-        },
-        {
-          role: "user",
-          content: `Request Context:
-- Item Information: ${requestData.itemInformation}
-- CR Rate: ${requestData.crRate}
-- Type: ${requestData.type.toUpperCase()}
-- Customer Expectation: ${requestData.customerExpectation}
-
-What is this item worth?`,
-        },
-      ]
-
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messages: apiMessages,
-          model: "llama-3.1-8b-instant",
-        }),
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to get AI response")
-      }
-
-      const assistantMessage: Message = {
-        id: `msg-${Date.now() + 2}`,
-        role: "assistant",
-        content: data.content,
-        timestamp: "Just now",
-      }
-
-      setConversations((prev) =>
-        prev.map((conv) => {
-          if (conv.id === newConv.id) {
-            return {
-              ...conv,
-              messages: [...conv.messages, assistantMessage],
-              lastMessage: assistantMessage.content.slice(0, 50) + "...",
-            }
-          }
-          return conv
-        })
-      )
-    } catch (error: any) {
-      const errorMessage: Message = {
-        id: `msg-${Date.now() + 2}`,
-        role: "assistant",
-        content: `Error: ${error.message || "Failed to get AI response. Make sure you've set GROQ_API_KEY in your .env file."}`,
-        timestamp: "Just now",
-      }
-
-      setConversations((prev) =>
-        prev.map((conv) => {
-          if (conv.id === newConv.id) {
-            return {
-              ...conv,
-              messages: [...conv.messages, errorMessage],
-              lastMessage: errorMessage.content.slice(0, 50) + "...",
-            }
-          }
-          return conv
-        })
-      )
-    } finally {
-      setIsTyping(false)
-    }
+    // Automatically trigger webuy search instead of AI chat
+    await handleWebuySearch(requestData.itemInformation, newConv.id, requestData)
   }
 
   const handleSelectConversation = (id: string) => {
@@ -332,39 +252,74 @@ What is this item worth?`,
     }
   }
 
+  // Helper function to create or update thinking message
+  const updateThinkingMessage = (convId: string, steps: string[], isComplete: boolean = false) => {
+    setConversations((prev) =>
+      prev.map((conv) => {
+        if (conv.id === convId) {
+          // Find existing thinking message or create new one
+          const existingThinkingIndex = conv.messages.findIndex(
+            (msg) => msg.isThinking === true
+          )
+          
+          const thinkingMessage: Message = {
+            id: existingThinkingIndex >= 0 
+              ? conv.messages[existingThinkingIndex].id 
+              : `msg-thinking-${Date.now()}`,
+            role: "assistant",
+            content: isComplete ? "" : "",
+            timestamp: "Just now",
+            isThinking: !isComplete,
+            thinkingSteps: steps,
+          }
+
+          if (existingThinkingIndex >= 0) {
+            // Update existing thinking message
+            const newMessages = [...conv.messages]
+            newMessages[existingThinkingIndex] = thinkingMessage
+            return {
+              ...conv,
+              messages: newMessages,
+            }
+          } else {
+            // Add new thinking message
+            return {
+              ...conv,
+              messages: [...conv.messages, thinkingMessage],
+            }
+          }
+        }
+        return conv
+      })
+    )
+  }
+
   // Handle webuy.com search with form filling
-  const handleWebuySearch = async (userRequest: string, convId: string) => {
+  const handleWebuySearch = async (userRequest: string, convId: string, requestData?: RequestData) => {
     setIsScraping(true)
     
     try {
-      // Get context from conversation if available
+      // Get context from conversation if available, or use passed requestData
       const currentConv = conversations.find((c) => c.id === convId)
-      const context = currentConv?.requestData
-        ? `Item Information: ${currentConv.requestData.itemInformation}, CR Rate: ${currentConv.requestData.crRate}, Type: ${currentConv.requestData.type}, Customer Expectation: ${currentConv.requestData.customerExpectation}`
+      const requestContext = requestData || currentConv?.requestData
+      const context = requestContext
+        ? `Item Information: ${requestContext.itemInformation}, CR Rate: ${requestContext.crRate}, Type: ${requestContext.type}, Customer Expectation: ${requestContext.customerExpectation}`
         : undefined
 
-      // Generate search term using AI tooling
+      // Step 1: Generate search term
+      updateThinkingMessage(convId, ["Generating search term from your request..."])
       const searchTerm = await generateSearchTerm(userRequest, context)
+      updateThinkingMessage(convId, [
+        "Generating search term from your request...",
+        `Generated search term: "${searchTerm}"`
+      ])
 
-      // Add a message showing we're searching
-      const searchingMessage: Message = {
-        id: `msg-${Date.now()}`,
-        role: "assistant",
-        content: `Searching uk.webuy.com for "${searchTerm}"...`,
-        timestamp: "Just now",
-      }
-
-      setConversations((prev) =>
-        prev.map((conv) => {
-          if (conv.id === convId) {
-            return {
-              ...conv,
-              messages: [...conv.messages, searchingMessage],
-            }
-          }
-          return conv
-        })
-      )
+      // Step 2: Navigate to webuy.com
+      updateThinkingMessage(convId, [
+        "Generating search term from your request...",
+        `Generated search term: "${searchTerm}"`,
+        "Navigating to uk.webuy.com..."
+      ])
 
       // Scrape uk.webuy.com with form filling
       const response = await fetch("/api/scrape", {
@@ -378,6 +333,7 @@ What is this item worth?`,
           waitForTimeout: 15000,
           extractText: true,
           extractLinks: true,
+          extractImages: true,
           fillForm: [
             {
               selector: "#predictiveSearchText",
@@ -388,24 +344,47 @@ What is this item worth?`,
         }),
       })
 
+      // Step 3: Show typing/searching message
+      updateThinkingMessage(convId, [
+        "Generating search term from your request...",
+        `Generated search term: "${searchTerm}"`,
+        "Navigating to uk.webuy.com...",
+        `Typing "${searchTerm}" into search field...`
+      ])
+
       const result = await response.json()
 
-      const assistantMessage: Message = {
-        id: `msg-${Date.now() + 1}`,
-        role: "assistant",
-        content: result.success
-          ? `I've searched uk.webuy.com for "${searchTerm}" and filled in the search field. Here's what I found:`
-          : `I encountered an error while searching: ${result.error}`,
-        timestamp: "Just now",
-        scrapeResult: result,
-      }
+      // Update the thinking message with final results (keep thinking panel, mark as complete)
+      const finalSteps = [
+        "Generating search term from your request...",
+        `Generated search term: "${searchTerm}"`,
+        "Navigating to uk.webuy.com...",
+        `Typing "${searchTerm}" into search field...`,
+        result.success ? "Extracting results..." : "Error occurred"
+      ]
 
       setConversations((prev) =>
         prev.map((conv) => {
           if (conv.id === convId) {
+            // Find and update the thinking message with results
+            const updatedMessages = conv.messages.map((msg) => {
+              if (msg.isThinking === true) {
+                return {
+                  ...msg,
+                  isThinking: false, // Mark as complete but keep the steps
+                  thinkingSteps: finalSteps,
+                  content: result.success
+                    ? `Successfully searched uk.webuy.com for "${searchTerm}". Here's what I found:`
+                    : `I encountered an error while searching: ${result.error}`,
+                  scrapeResult: result,
+                }
+              }
+              return msg
+            })
+
             return {
               ...conv,
-              messages: [...conv.messages, assistantMessage],
+              messages: updatedMessages,
               lastMessage: result.success
                 ? `Searched: ${searchTerm}`
                 : `Search failed: ${searchTerm}`,
@@ -415,19 +394,31 @@ What is this item worth?`,
         })
       )
     } catch (error: any) {
-      const assistantMessage: Message = {
-        id: `msg-${Date.now() + 1}`,
-        role: "assistant",
-        content: `Error: ${error.message || "Failed to search uk.webuy.com"}`,
-        timestamp: "Just now",
-      }
+      // Update thinking message with error
+      const errorSteps = [
+        "Generating search term from your request...",
+        "Error occurred during processing"
+      ]
 
       setConversations((prev) =>
         prev.map((conv) => {
           if (conv.id === convId) {
+            // Find and update the thinking message with error
+            const updatedMessages = conv.messages.map((msg) => {
+              if (msg.isThinking === true) {
+                return {
+                  ...msg,
+                  isThinking: false, // Mark as complete but keep the steps
+                  thinkingSteps: errorSteps,
+                  content: `Error: ${error.message || "Failed to search uk.webuy.com"}`,
+                }
+              }
+              return msg
+            })
+
             return {
               ...conv,
-              messages: [...conv.messages, assistantMessage],
+              messages: updatedMessages,
             }
           }
           return conv
@@ -536,11 +527,23 @@ What is this item worth?`,
     const currentConv = conversations.find((c) => c.id === targetConvId)
     const previousMessages = currentConv?.messages || []
 
+    // Build user message content - include request information if available
+    let userMessageContent = content
+    if (currentConv?.requestData) {
+      userMessageContent = `Request Information:
+- Item Information: ${currentConv.requestData.itemInformation}
+- CR Rate: ${currentConv.requestData.crRate}
+- Type: ${currentConv.requestData.type.toUpperCase()}
+- Customer Expectation: ${currentConv.requestData.customerExpectation}
+
+User Request: ${content}`
+    }
+
     // Add user message
     const userMessage: Message = {
       id: `msg-${Date.now()}`,
       role: "user",
-      content: content,
+      content: userMessageContent,
       timestamp: "Just now",
     }
 
@@ -576,18 +579,8 @@ What is this item worth?`,
       setIsTyping(true)
 
       try {
-        // Include request data in context if available
-        const requestContext = currentConv?.requestData
-          ? `Request Context:
-- Item Information: ${currentConv.requestData.itemInformation}
-- CR Rate: ${currentConv.requestData.crRate}
-- Type: ${currentConv.requestData.type.toUpperCase()}
-- Customer Expectation: ${currentConv.requestData.customerExpectation}
-
-`
-          : ""
-
         // Format messages for API (include all previous messages + new user message)
+        // Note: request context is already included in the user message content
         const apiMessages = [
           ...previousMessages.map((msg) => ({
             role: msg.role,
@@ -595,7 +588,7 @@ What is this item worth?`,
           })),
           {
             role: "user",
-            content: requestContext + content,
+            content: userMessageContent,
           },
         ]
 
@@ -717,18 +710,9 @@ What is this item worth?`,
             ) : (
               <>
                 {currentConversation?.messages.map((message) => (
-                  <div key={message.id}>
-                    <ChatMessage message={message} />
-                    {message.scrapeResult && (
-                      <div className="w-full border-b border-gray-800/50 bg-[#212121]">
-                        <div className="mx-auto max-w-3xl px-4 py-4">
-                          <ScrapeResultDisplay result={message.scrapeResult} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <ChatMessage key={message.id} message={message} />
                 ))}
-                {(isTyping || isScraping) && (
+                {isTyping && (
                   <div className="w-full border-b border-gray-800/50 bg-[#212121]">
                     <div className="mx-auto max-w-3xl px-4 py-4">
                       <div className="flex gap-4">
@@ -737,7 +721,7 @@ What is this item worth?`,
                         </div>
                         <div className="flex-1">
                           <div className="text-gray-400 text-sm">
-                            {isScraping ? "Scraping website..." : "Thinking..."}
+                            Thinking...
                           </div>
                         </div>
                       </div>

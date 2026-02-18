@@ -107,7 +107,7 @@ interface RequestData {
 ```
 
 ### `chat-message.tsx`
-**Purpose**: Display individual messages
+**Purpose**: Display individual messages with thinking panel support
 **Location**: `components/chat-message.tsx`
 
 **Props**:
@@ -121,8 +121,10 @@ interface ChatMessageProps {
 - Different styling for user vs assistant
 - User: Purple avatar, left-aligned
 - Assistant: Green avatar, left-aligned
+- **Thinking Panel**: Collapsible progress display
 - Action buttons (copy, like/dislike) on hover
 - Copy to clipboard functionality
+- Integrated scraping results display
 
 **Message Structure**:
 ```typescript
@@ -131,9 +133,18 @@ interface Message {
   role: "user" | "assistant"
   content: string
   timestamp: string
-  scrapeResult?: any  // Optional scraping data
+  scrapeResult?: any          // Optional scraping data
+  isThinking?: boolean        // Currently processing
+  thinkingSteps?: string[]    // Progress steps
 }
 ```
+
+**Thinking Panel**:
+- Shows when `thinkingSteps` exists and has items
+- Collapsible header ("Processing..." or "Processed")
+- Displays all progress steps with bullet points
+- Stays visible after completion
+- Design matches app's dark theme
 
 ### `chat-input.tsx`
 **Purpose**: Message input area
@@ -187,8 +198,8 @@ interface ScrapeResultProps {
 - Success/error status
 - Page title and URL
 - Extracted text (truncated if long)
-- Links list (first 20)
-- Images grid (first 16)
+- Links list (first 20, scrollable)
+- Images grid (first 16, responsive)
 - Screenshot (if available)
 - Custom metadata
 
@@ -197,6 +208,8 @@ interface ScrapeResultProps {
 - Scrollable content areas
 - Clickable links and images
 - Error handling display
+- Integrated into chat messages
+- Shows within same message as thinking panel
 
 ## Component Communication
 

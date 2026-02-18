@@ -2,9 +2,9 @@
 
 ## How Data Moves Through the Application
 
-This document explains the complete journey of data from user input to AI response.
+This document explains the complete journey of data from user input to results display.
 
-## Flow 1: Creating a New Request
+## Flow 1: Creating a New Request with Automatic Webuy Search
 
 ```
 ┌─────────────┐
@@ -53,39 +53,80 @@ This document explains the complete journey of data from user input to AI respon
 │ setCurrentConversationId(newConv.id)│
 └──────┬──────────────┘
        │
-       │ Adds system message with request info
-       │ Adds user message: "What is this item worth?"
+       │ Adds user message with request info:
+       │ "Request Information:
+       │  - Item Information: ...
+       │  - CR Rate: ...
+       │  - Type: ...
+       │  - Customer Expectation: ...
+       │
+       │  User Request: What is this item worth?"
        │
        ▼
 ┌─────────────────────┐
-│ API Call            │
-│ POST /api/chat      │
-│ With request context│
+│ Auto-Trigger        │
+│ handleWebuySearch() │
+│ (Automatic)         │
+└──────┬──────────────┘
+       │
+       │ Creates thinking message with:
+       │ isThinking: true
+       │ thinkingSteps: []
+       │
+       ▼
+┌─────────────────────┐
+│ Step 1: Generate   │
+│ Search Term         │
+│ POST /api/ai-tooling│
+│ task: "generate_search_term"│
+└──────┬──────────────┘
+       │
+       │ Updates thinking message:
+       │ thinkingSteps: ["Generating search term..."]
+       │
+       ▼
+┌─────────────────────┐
+│ Step 2: Navigate    │
+│ POST /api/scrape    │
+│ url: "uk.webuy.com" │
+│ waitForSelector: "#predictiveSearchText"│
+│ fillForm: [{...}]   │
+└──────┬──────────────┘
+       │
+       │ Updates thinking message:
+       │ thinkingSteps: [
+       │   "Generating search term...",
+       │   "Generated search term: 'iPhone 15'",
+       │   "Navigating to uk.webuy.com...",
+       │   "Typing 'iPhone 15' into search field..."
+       │ ]
+       │
+       ▼
+┌─────────────────────┐
+│ Step 3: Extract    │
+│ Results             │
+│ - Text content      │
+│ - Links            │
+│ - Images           │
 └──────┬──────────────┘
        │
        ▼
 ┌─────────────────────┐
-│ app/api/chat/route.ts│
-│ Calls Groq API      │
+│ Final Update        │
+│ isThinking: false   │
+│ content: "Successfully searched..."│
+│ scrapeResult: {...} │
+│ thinkingSteps: [all steps]│
 └──────┬──────────────┘
        │
        ▼
 ┌─────────────────────┐
-│ Groq API            │
-│ Returns AI Response │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│ State Update        │
-│ Adds AI message     │
-│ to conversation     │
-└──────┬──────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│ UI Updates          │
-│ Message displayed   │
+│ UI Renders          │
+│ - Thinking panel    │
+│   (collapsible)     │
+│ - Content message   │
+│ - Scrape results    │
+│   (links, images)   │
 └─────────────────────┘
 ```
 
@@ -109,14 +150,16 @@ This document explains the complete journey of data from user input to AI respon
 │ handleSendMessage() │
 └──────┬──────────────┘
        │
-       │ Checks if URL (scraping)
-       │ or regular message
+       │ Checks message type:
        │
-       ├─── URL? ────► Scraping Flow (see Flow 3)
+       ├─── URL? ────► handleScrape() (Flow 3)
+       │
+       ├─── Webuy search? ────► handleWebuySearch() (Flow 1)
        │
        └─── Regular ──►
               │
               │ Adds user message to state
+              │ (includes request context if available)
               │
               ▼
        ┌─────────────────────┐
@@ -163,7 +206,7 @@ This document explains the complete journey of data from user input to AI respon
        └─────────────────────┘
 ```
 
-## Flow 3: Web Scraping
+## Flow 3: Manual Web Scraping (URL Detection)
 
 ```
 ┌─────────────┐
@@ -199,7 +242,8 @@ This document explains the complete journey of data from user input to AI respon
 │ scraper.scrape()    │
 └──────┬──────────────┘
        │
-       │ Launches Chromium (headless)
+       │ Gets browser context (UK settings)
+       │ Creates new page
        │ Navigates to URL
        │ Waits for page load
        │
@@ -238,6 +282,56 @@ This document explains the complete journey of data from user input to AI respon
 └─────────────────────┘
 ```
 
+## Thinking Panel Flow
+
+The thinking panel is a special UI component that shows real-time progress:
+
+```
+┌─────────────────────┐
+│ Message Created     │
+│ isThinking: true   │
+│ thinkingSteps: []   │
+└──────┬──────────────┘
+       │
+       │ Progress updates:
+       │
+       ▼
+┌─────────────────────┐
+│ Update 1            │
+│ thinkingSteps: [    │
+│   "Step 1..."      │
+│ ]                   │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│ Update 2            │
+│ thinkingSteps: [    │
+│   "Step 1...",      │
+│   "Step 2..."       │
+│ ]                   │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│ Final Update        │
+│ isThinking: false   │
+│ thinkingSteps: [all]│
+│ content: "Result..."│
+│ scrapeResult: {...} │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│ UI Renders          │
+│ - Collapsible panel │
+│   (shows "Processed")│
+│ - All steps visible │
+│ - Content below     │
+│ - Results below     │
+└─────────────────────┘
+```
+
 ## State Updates Pattern
 
 All state updates follow this pattern:
@@ -264,22 +358,41 @@ This ensures:
 
 ## Request Context Injection
 
-When sending messages to AI, request data is automatically included:
+When sending messages, request data is automatically included in the user message:
 
 ```typescript
-const requestContext = currentConv?.requestData
-  ? `Request Context:
-- Item Information: ${...}
-- CR Rate: ${...}
-- Type: ${...}
-- Customer Expectation: ${...}
-`
-  : ""
+let userMessageContent = content
+if (currentConv?.requestData) {
+  userMessageContent = `Request Information:
+- Item Information: ${currentConv.requestData.itemInformation}
+- CR Rate: ${currentConv.requestData.crRate}
+- Type: ${currentConv.requestData.type.toUpperCase()}
+- Customer Expectation: ${currentConv.requestData.customerExpectation}
 
-// Added to user message
-content: requestContext + userMessage
+User Request: ${content}`
+}
 ```
 
 This gives the AI full context about the request in every conversation.
+
+## Message Structure
+
+Messages can have different states:
+
+```typescript
+interface Message {
+  id: string
+  role: "user" | "assistant"
+  content: string
+  timestamp: string
+  scrapeResult?: any
+  isThinking?: boolean        // Currently processing
+  thinkingSteps?: string[]    // Progress steps
+}
+```
+
+- **User messages**: Always have content, may include request context
+- **Thinking messages**: `isThinking: true`, `thinkingSteps` updates in real-time
+- **Completed messages**: `isThinking: false`, `thinkingSteps` preserved, may have `scrapeResult`
 
 See [Components Guide](./05-components.md) for component-level details.
